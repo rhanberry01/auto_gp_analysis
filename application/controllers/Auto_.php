@@ -1,0 +1,928 @@
+<?php
+if ( ! defined('BASEPATH')) exit('No direct script access allowed');
+ini_set('MAX_EXECUTION_TIME', -1);
+ini_set('mssql.connect_timeout',0);
+ini_set('mssql.timeout',0);
+set_time_limit(0);  
+ini_set('memory_limit', -1);
+
+//client_buffer_max_kb_size = '50240'
+//sqlsrv.ClientBufferMaxKBSize = 50240
+
+class Auto_ extends CI_Controller {
+	
+	public function __construct(){
+		date_default_timezone_set('Asia/Manila');
+		parent::__construct();
+		$this->load->model("Auto_model_");
+	}
+
+
+	public function trans_begin(){
+		$this->Auto_model_->trans_begin();
+	}
+
+	public function trans_status(){
+		$res = $this->Auto_model_->trans_status();
+		return $res;
+	}
+
+		public function trans_rollback(){
+		$this->Auto_model_->trans_rollback();
+	}
+
+		public function trans_commit(){
+		$this->Auto_model_->trans_commit();
+	}
+
+	public function start_category($data){
+		$this->gp_analysis_by_category($data);	
+	}
+
+	public function start($data){
+		$this->gp_analysis($data);	
+	}
+
+
+	
+	public function calculate_discount($disc,$amount,$retrunDeduc=false){
+        $total = $amount;
+        if($disc['Percent'] == 1){
+            $deduc = ($disc['Amount']/100) * $total;
+        }
+        else{
+            $deduc = $disc['Amount'];
+        }
+
+        if($disc['Plus'] == 1){
+            $total += $deduc;
+        }
+        else{
+            $total -= $deduc;
+        }
+        
+        if($disc['Plus'] == 1)
+            $deduc = -$deduc;
+        if($retrunDeduc)
+            return $deduc;
+        else
+            return $total;
+    }
+
+
+	public function AutoChangeVendorCost(){
+		$branches = '';
+		$branches = $this->Auto_model_->get_branch("", "");
+
+	  foreach ($branches as $br) {
+			# code...
+			$branch[$br->branchcode] = array(
+				'branch' => $br->remoteserverdatabasename,
+				'branchcode'=> $br->branchcode
+			);
+		}
+
+		$discs = array();
+		$discounts = $this->Auto_model_->get_discounts();
+
+		foreach ($discounts as $disc) {
+			# code...
+			$DiscountCode = preg_replace('/\s+/', '',$disc->DiscountCode);
+			$discs[$disc->DiscountCode] = array(
+				'DiscountCode' => $DiscountCode,
+				'Amount'=> $disc->Amount,
+				'Percent'=> $disc->Percent,
+				'Plus'=> $disc->Plus
+			);
+		}
+
+		$AutoCostingResult = $this->Auto_model_->FetchAutoCosting('0');
+
+		foreach ($AutoCostingResult as $AutoCosting) {
+
+			$id = $AutoCosting->Id;
+			$ProductID = preg_replace('/\s+/', '',$AutoCosting->ProductID);
+			$Vendor = preg_replace('/\s+/', '',$AutoCosting->Vendor);
+			$Barcode = preg_replace('/\s+/', '',$AutoCosting->barcode);
+			$srp = preg_replace('/\s+/', '',$AutoCosting->NewCOst); 
+			$br_code = preg_replace('/\s+/', '',$AutoCosting->br_code);
+			$qty = preg_replace('/\s+/', '',$AutoCosting->qty);
+			$UOM = preg_replace('/\s+/', '',$AutoCosting->UOM);
+			$disc1 = preg_replace('/\s+/', '',$AutoCosting->disc1);
+			$disc2 = preg_replace('/\s+/', '',$AutoCosting->disc2);
+			$disc3 = preg_replace('/\s+/', '',$AutoCosting->disc3);
+
+			
+			if($br_code == 'ALL'){
+
+				echo $Barcode.'-'.$srp.'-'.$br_code ;
+
+				$discls = array(); 
+				$extended = $AutoCosting->NewCOst;
+				for ($i=1; $i <= 3; $i++) { 
+					$discname = 'disc'.$i;
+					if($AutoCosting->$discname != null){
+						if($AutoCosting->$discname){
+							$disccode = preg_replace('/\s+/', '',$AutoCosting->$discname);
+							$discls[$AutoCosting->$discname] = $discs[$disccode];
+							$extended = $this->calculate_discount($discls[$AutoCosting->$discname],$extended);
+						}
+					}
+				}
+
+				$cost  = $AutoCosting->NewCOst;
+				$average_cost = $cost / $qty;
+				$average_net_cost = $extended /  $qty;
+				
+
+				echo 'Cost : '.$cost.PHP_EOL; 
+				echo 'AverageCost : '.$average_cost.PHP_EOL; 
+				echo 'AveragenetCost : '.$average_net_cost.PHP_EOL;
+
+				foreach ($branches as $br) {
+					//CHANGE ALL BRANCH
+					$MainBranch = $br->remoteserverdatabasename;
+					$BranchUpdatesDB = $br->branchcode;
+					$NewDatacenter = 'NEWDATACENTER';
+
+						$vendor_sql = "UPDATE ".$MainBranch.".dbo.VENDOR_Products SET cost = ".$cost.", averagecost =  ".$average_cost." ,averagenetcost =  ".$average_net_cost." , LastDateModified = '".date('Y-m-d H:i:s')."', totalcost = ".$average_net_cost." WHERE  VendorProductCode = '".$Barcode."' and VendorCode = '".$Vendor."' ";
+
+						/* echo $vendor_sql.PHP_EOL; */
+						// INSERT COST CHANGE HISTORY
+						$cost_history_sql  = "INSERT INTO ".$MainBranch.".dbo.CostChangeHistory (productid,vendorcode,uom,qty,cost,averagecost,netaveragecost,multiplier,discountcode1,discountcode2,discountcode3,LogDate,totalcost,postedby)
+						VALUES ('".$ProductID."','".$Vendor."','".$UOM."','".$qty."','".$cost."','".$average_cost."','".$average_net_cost."','1','".$disc1."','".$disc2."','".$disc3."','".date('Y-m-d')."','".$average_net_cost."', 1)";
+
+					/* 	echo $cost_history_sql.PHP_EOL; */
+						//100 SERVER
+						$this->Auto_model_->MultiQuery($vendor_sql);
+						$this->Auto_model_->MultiQuery($cost_history_sql);
+
+						//133 sERVER
+					//	$this->Auto_model_->MultiQuery_133($vendor_sql);
+					//	$this->Auto_model_->MultiQuery_133($cost_history_sql);
+				
+				}
+				
+			}else{
+
+				// S Recompute AverageCost and Net Cost
+
+					$discls = array(); 
+					$extended = $AutoCosting->NewCOst;
+					for ($i=1; $i <= 3; $i++) { 
+						$discname = 'disc'.$i;
+						if($AutoCosting->$discname != null){
+							if($AutoCosting->$discname){
+								$disccode = preg_replace('/\s+/', '',$AutoCosting->$discname);
+								$discls[$AutoCosting->$discname] = $discs[$disccode];
+								$extended = $this->calculate_discount($discls[$AutoCosting->$discname],$extended);
+							}
+						}
+					}
+
+					$cost  = $AutoCosting->NewCOst;
+					$average_cost = $cost / $qty;
+					$average_net_cost = $extended /  $qty;
+					
+
+					echo 'Cost : '.$cost.PHP_EOL; 
+					echo 'AverageCost : '.$average_cost.PHP_EOL; 
+					echo 'AveragenetCost : '.$average_net_cost.PHP_EOL;
+
+				// E Recompute AverageCost and Net Cost
+				
+				// S Updating MainBranches
+					$branch_arr = explode(",",$AutoCosting->br_code);
+						foreach($branch_arr as $code){
+							$br_codes = preg_replace('/\s+/', '',$code);
+							$MainBranch = $branch[$br_codes]['branch'];
+							 //UPDATE  Vendor Products 
+							$vendor_sql = "UPDATE ".$MainBranch.".dbo.VENDOR_Products SET cost = ".$cost.", averagecost =  ".$average_cost." ,averagenetcost =  ".$average_net_cost." , LastDateModified = '".date('Y-m-d H:i:s')."', totalcost = ".$average_net_cost." WHERE  VendorProductCode = '".$Barcode."' and VendorCode = '".$Vendor."' ";
+
+							// INSERT COST CHANGE HISTORY
+							$cost_history_sql  = "INSERT INTO ".$MainBranch.".dbo.CostChangeHistory (productid,vendorcode,uom,qty,cost,averagecost,netaveragecost,multiplier,discountcode1,discountcode2,discountcode3,LogDate,totalcost,postedby)
+							VALUES ('".$ProductID."','".$Vendor."','".$UOM."','".$qty."','".$cost."','".$average_cost."','".$average_net_cost."','1','".$disc1."','".$disc2."','".$disc3."','".date('Y-m-d')."','".$average_net_cost."', 1)";
+
+							//100 SERVER
+							$this->Auto_model_->MultiQuery($vendor_sql);
+							$this->Auto_model_->MultiQuery($cost_history_sql);
+
+							//133 sERVER
+							$this->Auto_model_->MultiQuery_133($vendor_sql);
+							$this->Auto_model_->MultiQuery_133($cost_history_sql);
+							
+
+						}
+				// E Updating MainBranches
+			}
+
+			  $main = "UPDATE AutoCosting  SET status = 1 where Id = ".$id." ";
+			 $this->Auto_model_->MultiQuery($main);
+				
+			  echo $id.' Has been updated!'.PHP_EOL; 
+
+			}
+			echo 'done!';
+	}
+
+	
+
+
+
+
+
+	public function AutoPricingBranch(){
+		$branches = '';
+		$branches = $this->Auto_model_->get_branch("", "");
+
+
+		foreach ($branches as $br) {
+			# code...
+			$branch[$br->remoteserverdatabasename] = array('branch' => $br->remoteserverdatabasename);	
+		}
+
+		$NewDatacenter = 'NEWDATACENTER';
+		$AutoPricingResult = $this->Auto_model_->FetchAutoPricing('2');
+
+		foreach ($AutoPricingResult as $AutoPricing) {
+
+			$Barcode = preg_replace('/\s+/', '',$AutoPricing->barcode);
+			$srp = preg_replace('/\s+/', '',$AutoPricing->srp); 
+			$br_code = preg_replace('/\s+/', '',$AutoPricing->br_code);
+
+			if($br_code == 'ALL'){
+
+				echo $Barcode.'<-Barcode'.PHP_EOL;
+				echo $srp.'<-srp'.PHP_EOL;
+				echo $br_code.'<-br_code'.PHP_EOL;
+
+
+				foreach ($branches as $br) {
+					//CHANGE ALL BRANCH
+					$MainBranches = $br->remoteserverdatabasename;
+					$BranchUpdatesDB = $br->branchcode;
+					$NewDatacenter = 'NEWDATACENTER';
+
+					echo '>>>>>>>>>>>>>>>>>> BRANCH >>>>>>>>>>>>>>>>>>>>'.PHP_EOL;
+					echo '>>'.$br->remoteserverdatabasename.PHP_EOL;
+					echo '>>'.$br->branchcode.PHP_EOL;
+
+					 //branch updates --
+				    $br_updates1 = "
+				    UPDATE POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."'; ";
+					
+					$this->Auto_model_->MultiQueryBranch($br_updates1,$BranchUpdatesDB);
+
+				}
+
+
+			}else{
+
+				
+				echo $Barcode.'<-Barcode'.PHP_EOL;
+				echo $srp.'<-srp'.PHP_EOL;
+				echo $br_code.'<-br_code'.PHP_EOL;
+
+				$branches = $this->Auto_model_->get_branch("'CMT','CB2'", "");
+
+				foreach ($branches as $br) {
+					//CHANGE ALL BRANCH
+					$MainBranches = $br->remoteserverdatabasename;
+					$BranchUpdatesDB = $br->branchcode;
+					$NewDatacenter = 'NEWDATACENTER';
+
+					echo '>>>>>>>>>>>>>>>>>> BRANCH >>>>>>>>>>>>>>>>>>>>'.PHP_EOL;
+					echo '>>'.$br->remoteserverdatabasename.PHP_EOL;
+					echo '>>'.$br->branchcode.PHP_EOL;
+
+					 //branch updates --
+				    $br_updates1 = "
+				    UPDATE POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."'; ";
+					
+					$this->Auto_model_->MultiQueryBranch($br_updates1,$BranchUpdatesDB);
+
+				}
+
+
+			}
+					$UpdAutoPricingSql = "UPDATE ".$NewDatacenter.".dbo.AutoPricing SET status = 3, date_updated ='".date('Y-m-d')."' where id =  ".$AutoPricing->id." ";
+					$UpdAutoPricing = $this->Auto_model_->MultiQuery($UpdAutoPricingSql);
+
+		}
+
+	}
+
+	public function AutoPricingMain(){
+
+		$branches = '';
+		$branches = $this->Auto_model_->get_branch("'CB2','CMT'", ""); //'BGT' //branchin , branchnotin
+
+		foreach ($branches as $br) {
+			# code...
+			$branch[$br->remoteserverdatabasename] = array('branch' => $br->remoteserverdatabasename);
+		}
+
+		$AutoPricingResult = $this->Auto_model_->FetchAutoPricing('1');
+
+		foreach ($AutoPricingResult as $AutoPricing) {
+
+			$Barcode = preg_replace('/\s+/', '',$AutoPricing->barcode);
+			$srp = preg_replace('/\s+/', '',$AutoPricing->srp); 
+			$br_code = preg_replace('/\s+/', '',$AutoPricing->br_code);
+
+			if($br_code == 'ALL'){
+
+				echo $Barcode.'<-Barcode'.PHP_EOL;
+				echo $srp.'<-srp'.PHP_EOL;
+				echo $br_code.'<-br_code'.PHP_EOL;
+
+				foreach ($branches as $br) {
+					//CHANGE ALL BRANCH
+					$MainBranches = $br->remoteserverdatabasename;
+					$BranchUpdatesDB = $br->branchcode;
+					$NewDatacenter = 'NEWDATACENTER';
+
+				    //update pos products
+					$pos_sql = "UPDATE ".$MainBranches.".dbo.POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."' ";
+
+
+					// insert pricechangehistory
+					$price_history_sql  = "INSERT INTO ".$MainBranches.".dbo.pricechangehistory (ProductID, Barcode, PriceModecode, dateposted, postedby, fromsrp, tosrp, UOM, markup)
+				      select ProductID, Barcode, PriceModecode,'".date('Y-m-d H:i:s')."', '1',srp, ".$srp." ,UOM,markup from ".$MainBranches.".dbo.POS_Products where  Barcode = '".$Barcode."' ";
+
+
+
+				     //branch updates --
+				    $br_updates1 = "UPDATE POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."'; ";
+
+					$br_updates2  = "INSERT INTO pricechangehistory (ProductID, Barcode, PriceModecode, dateposted, postedby, fromsrp, tosrp, UOM, markup)
+				      select ProductID, Barcode, PriceModecode,'".date('Y-m-d H:i:s')."', '1',srp, ".$srp." ,UOM,markup from POS_Products where  Barcode = '".$Barcode."'; ";
+				      //---
+						
+							$p = '"'.$br_updates2.' '.$br_updates1.'"';
+				     $branch_updates_sql = "
+				     	INSERT INTO ".$NewDatacenter.".dbo.branch_updates (branch_code,sql_statement,throw,date_added,my_status,throw133)
+				     	VALUES ('".$BranchUpdatesDB."',$p,0,'".date('Y-m-d H:i:s')."',0,0)
+				     ";
+
+						$this->Auto_model_->MultiQuery($price_history_sql);
+						$this->Auto_model_->MultiQuery($pos_sql);
+						$this->Auto_model_->MultiQuery($branch_updates_sql);
+
+
+					echo '>>>>>>>>>>>>>>>>>>MAIN BRANCH >>>>>>>>>>>>>>>>>>>>'.PHP_EOL;
+					echo '>>'.$br->remoteserverdatabasename.PHP_EOL;
+
+				}
+
+
+
+			}else{
+
+
+				echo $Barcode.'<-Barcode'.PHP_EOL;
+				echo $srp.'<-srp'.PHP_EOL;
+				echo $br_code.'<-br_code'.PHP_EOL;
+
+				$branches = $this->Auto_model_->get_branch("'CB2','CMT'", "");
+				foreach ($branches as $br) {
+					//CHANGE ALL BRANCH
+					$MainBranches = $br->remoteserverdatabasename;
+					$BranchUpdatesDB = $br->branchcode;
+					$NewDatacenter = 'NEWDATACENTER';
+
+				    //update pos products
+					$pos_sql = "UPDATE ".$MainBranches.".dbo.POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."' ";
+
+
+					// insert pricechangehistory
+					$price_history_sql  = "INSERT INTO ".$MainBranches.".dbo.pricechangehistory (ProductID, Barcode, PriceModecode, dateposted, postedby, fromsrp, tosrp, UOM, markup)
+				      select ProductID, Barcode, PriceModecode,'".date('Y-m-d H:i:s')."', '1',srp, ".$srp." ,UOM,markup from ".$MainBranches.".dbo.POS_Products where  Barcode = '".$Barcode."' ";
+
+
+
+				     //branch updates --
+				    $br_updates1 = "UPDATE POS_Products SET srp = ".$srp.",  LastDateModified = '".date('Y-m-d H:i:s')."' WHERE  Barcode = '".$Barcode."'; ";
+
+					$br_updates2  = "INSERT INTO pricechangehistory (ProductID, Barcode, PriceModecode, dateposted, postedby, fromsrp, tosrp, UOM, markup)
+				      select ProductID, Barcode, PriceModecode,'".date('Y-m-d H:i:s')."', '1',srp, ".$srp." ,UOM,markup from POS_Products where  Barcode = '".$Barcode."'; ";
+				      //---
+						
+							$p = '"'.$br_updates2.' '.$br_updates1.'"';
+				     $branch_updates_sql = "
+				     	INSERT INTO ".$NewDatacenter.".dbo.branch_updates (branch_code,sql_statement,throw,date_added,my_status,throw133)
+				     	VALUES ('".$BranchUpdatesDB."',$p,0,'".date('Y-m-d H:i:s')."',0,0)
+				     ";
+
+						$this->Auto_model_->MultiQuery($price_history_sql);
+						$this->Auto_model_->MultiQuery($pos_sql);
+						$this->Auto_model_->MultiQuery($branch_updates_sql);
+
+
+					echo '>>>>>>>>>>>>>>>>>>MAIN BRANCH >>>>>>>>>>>>>>>>>>>>'.PHP_EOL;
+					echo '>>'.$br->remoteserverdatabasename.PHP_EOL;
+
+				}
+					//CHANGE DIFFRENT BRANCH
+
+			}
+					$UpdAutoPricingSql = "UPDATE ".$NewDatacenter.".dbo.AutoPricing SET status = 2, date_updated ='".date('Y-m-d')."' where id =  ".$AutoPricing->id." ";
+					$UpdAutoPricing = $this->Auto_model_->MultiQuery($UpdAutoPricingSql);
+
+		}
+
+	}
+
+
+	public function gp_analysis($date = null){
+		
+		echo 'data gathering please do not close'.PHP_EOL;
+		//$datetoday = date("Y-m-d");
+		if($date){
+			$dates = $date;
+		}else{
+			$dates = array('01/01/2023');
+		}
+		
+
+		//die();
+		$count = count($dates);
+		$num = 0;
+		while($count > $num){
+
+			$date_ = $dates[$num];
+			echo $date_.'=='.PHP_EOL;
+
+			$pastdays = $date_;
+			//$past = "-".$data." day";
+			$datetoday = date("Y-m-t",strtotime($pastdays));
+			/*echo $pastdays.'insert_generated_analysis'.$datetoday.PHP_EOL;
+			die();*/
+
+			$data = $this->Auto_model_->get_branch();
+			$this->trans_begin();
+			$resu='';
+				foreach ($data as $res) {
+					//check if data  is already exist
+
+				$check_data =  $this->Auto_model_->check_if_data_exist($res->remoteserverdatabasename,$datetoday);
+				if($check_data){
+					$header_tables = 'gp_analysis_header';
+					$details_tables =  'gp_analysis_details';
+					//delete details
+					$this->Auto_model_->delete_details($res->remoteserverdatabasename,$details_tables,$check_data);
+					//delete header
+					$this->Auto_model_->delete_header($res->remoteserverdatabasename,$header_tables,$check_data);
+				}
+				
+					//die();
+
+
+					$maxcounter = $this->Auto_model_->get_max_counter($res->remoteserverdatabasename);
+					$newcounter = $maxcounter+1;
+						echo $res->remoteserverdatabasename.PHP_EOL;
+					$result = $this->Auto_model_->insert_gp_analysis_header($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+					if($result){
+							echo $res->remoteserverdatabasename.' header inserted'.PHP_EOL;
+						$resu = $this->Auto_model_->insert_gp_analysis_details($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+						if($resu){
+							echo $res->remoteserverdatabasename.' details inserted'.PHP_EOL;
+						}
+					}
+				}
+
+				$res = $this->Auto_model_->insert_generated_analysis($pastdays,$datetoday,1);
+				if($res){
+					echo 'insert_generated_analysis'.PHP_EOL;
+				}
+
+				if ($this->trans_status() === FALSE)
+				{
+					$this->trans_rollback();
+				}
+				else
+				{
+					$this->trans_commit();
+				}
+
+				$num++;
+			}	
+
+		}
+		
+		public function gp_analysis_by_category($date = null){
+
+			echo 'data gathering please do not close'.PHP_EOL;
+
+			if($date){
+				$dates = $date;
+			}else{
+				$dates = array('01/01/2023');
+			}
+			
+			//die();
+			$count = count($dates);
+			$num = 0;
+			while($count > $num){
+
+				$date_ = $dates[$num];
+				echo $date_.'=='.PHP_EOL;
+
+				$pastdays = $date_;
+				//$past = "-".$data." day";
+				$datetoday = date("Y-m-t",strtotime($pastdays));
+				//echo $pastdays.'insert_generated_analysis'.$datetoday.PHP_EOL;
+				//die();
+				//$past = "-".$data." day";
+			$datetoday = date("Y-m-t",strtotime($pastdays));
+			$data = $this->Auto_model_->get_branch(); //"'SRN'"
+			$this->trans_begin();
+			$resu='';
+			foreach ($data as $res) {
+
+				$check_data =  $this->Auto_model_->check_if_data_exist_category($res->remoteserverdatabasename,$datetoday);
+
+				echo $check_data;
+				if($check_data){
+					$header_tables = 'gp_analysis_header_by_category';
+					$details_tables =  'gp_analysis_details_by_category';
+					//delete details
+					$this->Auto_model_->delete_details($res->remoteserverdatabasename,$details_tables,$check_data);
+					//delete header
+					$this->Auto_model_->delete_header($res->remoteserverdatabasename,$header_tables,$check_data);
+				}
+
+
+				//die();
+
+
+				$maxcounter = $this->Auto_model_->get_max_counter_by_category($res->remoteserverdatabasename);
+				$newcounter = $maxcounter+1;
+					echo $res->remoteserverdatabasename.PHP_EOL;
+				$result = $this->Auto_model_->insert_gp_analysis_header_by_category($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+				
+				if($result){
+					echo $res->remoteserverdatabasename.' header inserted'.PHP_EOL;
+					$resu = $this->Auto_model_->insert_gp_cat_analysis_details($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+					if($resu){
+						echo $res->remoteserverdatabasename.' details inserted'.PHP_EOL;
+					}
+				 }
+
+			}
+
+			$res = $this->Auto_model_->insert_generated_analysis($pastdays,$datetoday,0);
+			if($res){
+				echo 'insert_generated_category_analysis'.PHP_EOL;
+			}
+
+			if ($this->trans_status() === FALSE)
+			{
+				$this->trans_rollback();
+			}
+			else
+			{
+				$this->trans_commit();
+			}
+
+				$num++;
+		}	
+
+
+	}
+
+
+	public function gp_analysis_by_sub_category(){
+
+			echo 'data gathering please do not close'.PHP_EOL;
+
+			$dates =  array('01/01/2023');
+			//die();
+			$count = count($dates);
+			$num = 0;
+			while($count > $num){
+
+				$date_ = $dates[$num];
+				echo $date_.'=='.PHP_EOL;
+
+			$pastdays = date("Y-m-d",strtotime($date_));
+			$datetoday = date("Y-m-t",strtotime($pastdays));
+			echo $pastdays.'++++++'.$datetoday.PHP_EOL;
+			$data = $this->Auto_model_->get_branch();
+			$this->trans_begin();
+			$resu='';
+			foreach ($data as $res) {
+
+				$check_data =  $this->Auto_model_->check_if_data_exist_sub_category($res->remoteserverdatabasename,$datetoday);
+
+				echo $check_data;
+				if($check_data){				
+					//delete details
+					$this->Auto_model_->delete_sub_category($res->remoteserverdatabasename,$datetoday);
+					
+				}
+
+					echo $res->remoteserverdatabasename.PHP_EOL;
+					$result = $this->Auto_model_->insert_gp_analysis_header_by_sub_category($pastdays,$datetoday,$res->remoteserverdatabasename);
+				
+
+			}
+
+			if ($this->trans_status() === FALSE)
+			{
+				$this->trans_rollback();
+			}
+			else
+			{
+				$this->trans_commit();
+			}
+
+				$num++;
+		}	
+
+
+	}
+
+
+
+
+	###############DALIY#############
+
+			public function getDates($date1, $date2, $format = 'Y-m-d' ) {
+		      $dates = array();
+		      $current = strtotime($date1);
+		      $date2 = strtotime($date2);
+		      $stepVal = '+1 day';
+		      while( $current <= $date2 ) {
+		         $dates[] = date($format, $current);
+		         $current = strtotime($stepVal, $current);
+		      }
+		      return $dates;
+		   }
+
+
+
+
+			public function gp_analysis_by_category_daily($branch=null,$days=null){
+
+			echo 'data gathering please do not close'.PHP_EOL;
+			$today = date("Y-m-d",strtotime("-1 days"));
+			
+			$pastdates = date("Y-m-d", strtotime("-10 days"));
+			if($days){
+				$pastdates = date("Y-m-d", strtotime($days." days"));	
+			}
+			$dates = $this->getDates($pastdates,$today);
+
+
+			$count = count($dates);
+			$num = 0;
+			while($count > $num){
+
+			$date_ = $dates[$num];
+			echo $date_.'=='.PHP_EOL;
+
+			$pastdays = $date_;
+			$datetoday = date("Y-m-d",strtotime($pastdays));
+
+			$data = $this->Auto_model_->get_branch(""); //,'CT2',,,,
+
+
+			if($branch){
+				$data = $this->Auto_model_->get_branch("'".$branch."'");
+			}
+			$this->trans_begin();
+			$resu='';
+
+			$updated_data = array(
+				'COMMDEPARO_FC' => '2022-06-15', //last date
+				'COMMSANANA_FC' => '2022-06-6', //last date
+				'COMMLLANO_FC' => '2022-06-13', //last date
+				'COMMTALA_FC' => '2022-06-21', //last date
+				'COMMBATASAN_FC' => '2022-06-9'//last date
+								);
+
+			foreach ($data as $res) {
+				$ex = 0;
+			 	if(isset($updated_data[$res->remoteserverdatabasename])){
+					$last_date = $updated_data[$res->remoteserverdatabasename];
+
+					echo 'lastdate'.$last_date.PHP_EOL;
+					if($datetoday <= $last_date){
+						echo 'exclude'.PHP_EOL;
+						$ex = 1;
+					}
+				};
+ 
+
+					$check_data =  $this->Auto_model_->check_if_data_exist_category_daily($res->remoteserverdatabasename,$datetoday);
+				
+					if($check_data){
+						$header_tables = 'gp_analysis_header_by_category_daily';
+						$details_tables =  'gp_analysis_details_by_category_daily';
+						 echo '#########';
+						echo $ex;
+						echo PHP_EOL; 
+						if(!($ex == 1)){
+							echo '#########';
+							echo 'delete';
+							echo '#########';
+							echo PHP_EOL; 
+ 							 //delete details
+							$this->Auto_model_->delete_details($res->remoteserverdatabasename,$details_tables,$check_data);
+							//delete header
+							$this->Auto_model_->delete_header($res->remoteserverdatabasename,$header_tables,$check_data);  
+						}
+						
+					}
+
+
+				 	 $maxcounter = $this->Auto_model_->get_max_counter_by_category_daily($res->remoteserverdatabasename);
+					$newcounter = $maxcounter+1;
+						echo $res->remoteserverdatabasename.PHP_EOL;
+					$result = $this->Auto_model_->insert_gp_analysis_header_by_category_daily($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+					
+					if($result){
+						echo $res->remoteserverdatabasename.' header inserted'.PHP_EOL;
+						$resu = $this->Auto_model_->insert_gp_cat_analysis_details_daily($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+						if($resu){
+							echo $res->remoteserverdatabasename.' details inserted'.PHP_EOL;
+						}
+					 }  
+ 
+			}
+
+			  $res = $this->Auto_model_->insert_generated_analysis_daily($pastdays,$datetoday,0);
+			if($res){
+				echo 'insert_generated_category_analysis_daily'.PHP_EOL;
+			} 
+
+			if ($this->trans_status() === FALSE)
+			{
+				$this->trans_rollback();
+			}
+			else
+			{
+				$this->trans_commit();
+			}
+
+				$num++;
+		}	
+
+
+	}
+
+
+
+
+
+
+	public function gp_analysis_by_sub_category_daily($branch=null,$days=null){
+
+			echo 'data gathering please do not close'.PHP_EOL;
+
+			$today = date("Y-m-d",strtotime("-1 days"));
+			
+			$pastdates = date("Y-m-d", strtotime("-10 days"));
+			if($days){
+				$pastdates = date("Y-m-d", strtotime($days." days"));	
+			}
+			$dates = $this->getDates($pastdates,$today);
+
+			$count = count($dates);
+			$num = 0;
+			while($count > $num){
+
+				$date_ = $dates[$num];
+				echo $date_.'=='.PHP_EOL;
+
+			$pastdays = date("Y-m-d",strtotime($date_));
+			$datetoday = date("Y-m-d",strtotime($pastdays));
+			echo $pastdays.'++++++'.$datetoday.PHP_EOL;
+			$data = $this->Auto_model_->get_branch(""); //,'CT2',,,,
+			if($branch){
+				$data = $this->Auto_model_->get_branch("'".$branch."'");
+			}
+			$this->trans_begin();
+			$resu='';
+			foreach ($data as $res) {
+
+				$check_data =  $this->Auto_model_->check_if_data_exist_sub_category_daily($res->remoteserverdatabasename,$datetoday);
+
+				echo $check_data;
+				if($check_data){				
+					//delete details
+					$this->Auto_model_->delete_sub_category_daily($res->remoteserverdatabasename,$datetoday);
+					
+				}
+
+					echo $res->remoteserverdatabasename.PHP_EOL;
+					$result = $this->Auto_model_->insert_gp_analysis_header_by_sub_category_daily($pastdays,$datetoday,$res->remoteserverdatabasename);
+				
+
+			}
+
+			if ($this->trans_status() === FALSE)
+			{
+				$this->trans_rollback();
+			}
+			else
+			{
+				$this->trans_commit();
+			}
+
+				$num++;
+		}	
+
+
+	}
+
+
+	public function gp_analysis_daily($branch=null,$days=null){
+		
+		echo 'data gathering please do not close'.PHP_EOL;
+		//$datetoday = date("Y-m-d");
+	
+		$today = date("Y-m-d",strtotime("-1 days"));
+		
+		$pastdates = date("Y-m-d", strtotime("-10 days"));
+		if($days){
+			$pastdates = date("Y-m-d", strtotime($days." days"));	
+		}
+
+		$dates = $this->getDates($pastdates,$today);
+
+		// $dates = array('2022-05-26','2022-05-11','2022-05-28','2022-05-29','2022-05-5','2022-05-32','2022-06-01');
+		//die();
+		$count = count($dates);
+		$num = 0;
+		while($count > $num){
+
+			$date_ = $dates[$num];
+			echo $date_.'=='.PHP_EOL;
+
+			$pastdays = $date_;
+			//$past = "-".$data." day";
+			$datetoday = date("Y-m-d",strtotime($pastdays));
+			/*echo $pastdays.'insert_generated_analysis'.$datetoday.PHP_EOL;
+			die();*/
+
+			$data = $this->Auto_model_->get_branch(""); //,'CT2',,,,
+			if($branch){
+				$data = $this->Auto_model_->get_branch("'".$branch."'");
+			}
+			$this->trans_begin();
+			$resu='';
+				foreach ($data as $res) {
+					//check if data  is already exist
+
+				$check_data =  $this->Auto_model_->check_if_data_exist_daily($res->remoteserverdatabasename,$datetoday);
+				if($check_data){
+					$header_tables = 'gp_analysis_header_daily';
+					$details_tables =  'gp_analysis_details_daily';
+					//delete details
+					$this->Auto_model_->delete_details($res->remoteserverdatabasename,$details_tables,$check_data);
+					//delete header
+					$this->Auto_model_->delete_header($res->remoteserverdatabasename,$header_tables,$check_data);
+				}
+				
+					//die();
+
+
+					$maxcounter = $this->Auto_model_->get_max_counter_daily($res->remoteserverdatabasename);
+					$newcounter = $maxcounter+1;
+						echo $res->remoteserverdatabasename.PHP_EOL;
+					$result = $this->Auto_model_->insert_gp_analysis_header_daily($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+					if($result){
+							echo $res->remoteserverdatabasename.' header inserted'.PHP_EOL;
+						$resu = $this->Auto_model_->insert_gp_analysis_details_daily($newcounter,$pastdays,$datetoday,$res->remoteserverdatabasename);
+						if($resu){
+							echo $res->remoteserverdatabasename.' details inserted'.PHP_EOL;
+						}
+					}
+				}
+
+				$res = $this->Auto_model_->insert_generated_analysis_daily($pastdays,$datetoday,1);
+				if($res){
+					echo 'insert_generated_analysis'.PHP_EOL;
+				}
+
+				
+					if ($this->trans_status() === FALSE)
+					{
+						$this->trans_rollback();
+					}
+					else
+					{
+						$this->trans_commit();
+					}
+				
+				$num++;
+			}	
+
+		}
+
+
+
+
+}
